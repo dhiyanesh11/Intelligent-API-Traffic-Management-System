@@ -50,6 +50,15 @@ class Route(Base):
     methods: Mapped[list] = mapped_column(JSON, default=lambda: ["GET"])
     backend_id: Mapped[int] = mapped_column(ForeignKey("backends.id", ondelete="RESTRICT"))
     policy_id: Mapped[int | None] = mapped_column(ForeignKey("rate_limit_policies.id", ondelete="SET NULL"))
+    strategy: Mapped[str] = mapped_column(String(24), default="round_robin")
     auth_required: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class RouteBackend(Base):
+    __tablename__ = "route_backends"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id", ondelete="CASCADE"))
+    backend_id: Mapped[int] = mapped_column(ForeignKey("backends.id", ondelete="CASCADE"))
+    weight: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)

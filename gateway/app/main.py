@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.limiters import RateLimiter
 from app.routing import downstream_path, match_route, refresh_routes, route_refresh_loop
+from app.resilience import Resilience, cache_key, health_check_loop
 from app.security import authenticate
 
 log = logging.getLogger(__name__)
@@ -20,12 +22,19 @@ async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=3.0), follow_redirects=False)
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
     app.state.limiter = RateLimiter(app.state.redis)
+    app.state.resilience = Resilience(app.state.redis)
     await refresh_routes()
     refresh_task = asyncio.create_task(route_refresh_loop())
+    health_task = asyncio.create_task(health_check_loop(app.state.http, app.state.redis))
     yield
     refresh_task.cancel()
+    health_task.cancel()
     try:
         await refresh_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await health_task
     except asyncio.CancelledError:
         pass
     await app.state.http.aclose()
@@ -73,15 +82,41 @@ async def proxy(path: str, request: Request):
     headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() not in {"x-api-key", "authorization"}}
     headers["x-request-id"] = request_id
     headers["x-forwarded-for"] = f"{forwarded_for}, {client_ip}" if forwarded_for else client_ip
-    destination = route.base_url + downstream_path("/" + path, route)
     try:
+        backend_url = await request.app.state.resilience.choose(route.id, route.strategy, route.backends)
+    except RuntimeError:
+        raise HTTPException(503, "no healthy backend available", headers=rate_headers)
+    destination = backend_url + downstream_path("/" + path, route)
+    resilience = request.app.state.resilience
+    if await resilience.is_circuit_open(backend_url):
+        raise HTTPException(503, "upstream circuit is open", headers=rate_headers)
+    cache_id = cache_key(route.id, destination, str(request.url.query))
+    if request.method == "GET":
+        cached = await resilience.cached(cache_id)
+        if cached:
+            cached_headers = dict(cached["headers"])
+            cached_headers.update(rate_headers)
+            cached_headers["X-Cache"] = "HIT"
+            return Response(content=bytes.fromhex(cached["body_hex"]), status_code=cached["status"], headers=cached_headers)
+    try:
+        started = time.perf_counter()
         upstream = await request.app.state.http.request(request.method, destination, params=request.query_params, content=await request.body(), headers=headers)
+        if request.method == "GET" and upstream.status_code >= 500:
+            upstream = await request.app.state.http.request(request.method, destination, params=request.query_params, content=b"", headers=headers)
+        if upstream.status_code < 500:
+            await resilience.success(backend_url)
+        else:
+            await resilience.failure(backend_url)
     except httpx.TimeoutException:
         raise HTTPException(503, "upstream timed out", headers={"X-Request-ID": request_id})
     except httpx.HTTPError:
         log.exception("upstream request failed route=%s request_id=%s", route.name, request_id)
         raise HTTPException(502, "upstream unavailable", headers={"X-Request-ID": request_id})
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
+    response_headers.update(rate_headers)
+    response_headers["X-Cache"] = "MISS" if request.method == "GET" else "BYPASS"
+    if request.method == "GET" and upstream.status_code < 400:
+        await resilience.cache(cache_id, {"status": upstream.status_code, "headers": response_headers, "body_hex": upstream.content.hex()}, ttl=10)
     response_headers["X-Request-ID"] = request_id
     response_headers["X-RateLimit-Limit"] = str(route.limit)
     if "X-RateLimit-Remaining" in rate_headers:
