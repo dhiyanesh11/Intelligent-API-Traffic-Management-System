@@ -1,0 +1,14 @@
+{
+  "title": "API Traffic Management",
+  "uid": "iatm-traffic",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {"id":1,"type":"timeseries","title":"Requests per second","gridPos":{"h":8,"w":12,"x":0,"y":0},"targets":[{"expr":"sum(rate(gateway_requests_total[1m]))","legendFormat":"requests/s"}]},
+    {"id":2,"type":"timeseries","title":"p95 gateway latency","gridPos":{"h":8,"w":12,"x":12,"y":0},"targets":[{"expr":"histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le)) * 1000","legendFormat":"p95 ms"}]},
+    {"id":3,"type":"timeseries","title":"Error rate","gridPos":{"h":8,"w":12,"x":0,"y":8},"targets":[{"expr":"sum(rate(gateway_requests_total{status=~\"5..\"}[1m])) / clamp_min(sum(rate(gateway_requests_total[1m])), 0.001)","legendFormat":"error ratio"}]},
+    {"id":4,"type":"timeseries","title":"Rate limited requests","gridPos":{"h":8,"w":12,"x":12,"y":8},"targets":[{"expr":"sum(rate(gateway_rate_limited_total[1m]))","legendFormat":"429/s"}]},
+    {"id":5,"type":"stat","title":"Open circuits","gridPos":{"h":5,"w":8,"x":0,"y":16},"targets":[{"expr":"sum(gateway_circuit_open)"}]}
+  ]
+}

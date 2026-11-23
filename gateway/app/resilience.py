@@ -6,6 +6,7 @@ import random
 from sqlalchemy import select
 from app.database import Session
 from app.models import Backend
+from app.metrics import CIRCUIT
 from redis.asyncio import Redis
 
 FAILURE_LUA = """
@@ -29,10 +30,13 @@ class Resilience:
     async def success(self, backend: str):
         await self.redis.delete(f"circuit:{backend}", f"failures:{backend}")
         await self.redis.set(f"backend:healthy:{backend}", "1", ex=20)
+        CIRCUIT.labels(backend).set(0)
 
     async def failure(self, backend: str):
         await self.redis.set(f"backend:healthy:{backend}", "0", ex=20)
-        await self.failure_script(keys=[f"failures:{backend}", f"circuit:{backend}"], args=[5, 10])
+        opened = await self.failure_script(keys=[f"failures:{backend}", f"circuit:{backend}"], args=[5, 10])
+        if int(opened) == 1:
+            CIRCUIT.labels(backend).set(1)
 
     async def cached(self, key: str):
         raw = await self.redis.get(key)

@@ -89,11 +89,19 @@ async def proxy(path: str, request: Request):
             raise HTTPException(401, "valid API key or bearer token required", headers={"WWW-Authenticate": "Bearer"})
     request_id = getattr(request.state, "request_id", request.headers.get("x-request-id") or str(uuid.uuid4()))
     client_ip = request.client.host if request.client else "unknown"
+    redis = request.app.state.redis
+    whitelisted = bool(await redis.sismember("policy:whitelist", client_ip)) or bool(principal and await redis.sismember("policy:whitelist", principal))
+    if not whitelisted and await redis.exists(f"policy:blocked:{client_ip}"):
+        raise HTTPException(429, "client temporarily blocked by adaptive policy", headers={"Retry-After": "60", "X-Request-ID": request_id})
+    effective_limit = route.limit
+    dynamic_limit = await redis.get(f"policy:manual:{route.id}") or await redis.get(f"policy:limit:{route.id}")
+    if dynamic_limit:
+        effective_limit = max(1, int(dynamic_limit))
     subject = principal if route.scope == "api_key" and principal else client_ip if route.scope == "ip" else f"route:{route.id}"
     limit_key = f"rate:{route.id}:{route.scope}:{subject}"
-    rate_headers = {"X-RateLimit-Limit": str(route.limit), "X-Request-ID": request_id}
+    rate_headers = {"X-RateLimit-Limit": str(effective_limit), "X-Request-ID": request_id}
     try:
-        allowed, remaining, retry_after = await request.app.state.limiter.check(key=limit_key, algorithm=route.algorithm, limit=route.limit, window_seconds=route.window_seconds, request_id=request_id)
+        allowed, remaining, retry_after = await request.app.state.limiter.check(key=limit_key, algorithm=route.algorithm, limit=effective_limit, window_seconds=route.window_seconds, request_id=request_id)
         rate_headers["X-RateLimit-Remaining"] = str(remaining)
         if not allowed:
             rate_headers["Retry-After"] = str(retry_after)
@@ -144,7 +152,7 @@ async def proxy(path: str, request: Request):
     if request.method == "GET" and upstream.status_code < 400:
         await resilience.cache(cache_id, {"status": upstream.status_code, "headers": response_headers, "body_hex": upstream.content.hex()}, ttl=10)
     response_headers["X-Request-ID"] = request_id
-    response_headers["X-RateLimit-Limit"] = str(route.limit)
+    response_headers["X-RateLimit-Limit"] = str(effective_limit)
     if "X-RateLimit-Remaining" in rate_headers:
         response_headers["X-RateLimit-Remaining"] = rate_headers["X-RateLimit-Remaining"]
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)

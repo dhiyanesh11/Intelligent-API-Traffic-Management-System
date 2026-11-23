@@ -3,7 +3,8 @@ import math
 from redis.asyncio import Redis
 
 TOKEN_BUCKET_LUA = """
-local now = tonumber(redis.call('TIME')[1]) + tonumber(redis.call('TIME')[2]) / 1000000
+local time = redis.call('TIME')
+local now = tonumber(time[1]) + tonumber(time[2]) / 1000000
 local capacity = tonumber(ARGV[1])
 local refill = tonumber(ARGV[2])
 local ttl = tonumber(ARGV[3])

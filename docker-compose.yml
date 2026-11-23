@@ -69,6 +69,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://traffic:traffic-dev-only@postgres:5432/traffic}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin-token-change-me}
+      JWT_SECRET: ${JWT_SECRET:-replace-this-with-a-long-random-secret}
     ports: ["8010:8010"]
     depends_on:
       gateway: {condition: service_healthy}
@@ -82,6 +83,15 @@ services:
     ports: ["8020:8020"]
     depends_on:
       gateway: {condition: service_healthy}
+  policy_engine:
+    build: ./policy_engine
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://traffic:traffic-dev-only@postgres:5432/traffic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BLOCK_TTL_SECONDS: ${BLOCK_TTL_SECONDS:-120}
+      LATENCY_TARGET_MS: ${LATENCY_TARGET_MS:-250}
+    depends_on:
+      ml_service: {condition: service_started}
   dashboard:
     build: ./dashboard
     ports: ["3001:80"]

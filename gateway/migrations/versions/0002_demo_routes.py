@@ -17,9 +17,12 @@ def upgrade():
     op.bulk_insert(policies, [{"id": 1, "name": "default", "algorithm": "token_bucket", "limit": 60, "window_seconds": 60, "scope": "api_key", "is_active": True}])
     routes = sa.table("routes", sa.column("id", sa.Integer), sa.column("name", sa.String), sa.column("path_prefix", sa.String), sa.column("methods", sa.JSON), sa.column("backend_id", sa.Integer), sa.column("policy_id", sa.Integer), sa.column("auth_required", sa.Boolean), sa.column("is_active", sa.Boolean))
     op.bulk_insert(routes, [
-        {"id": 1, "name": "demo-alpha", "path_prefix": "/alpha", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "backend_id": 1, "policy_id": 1, "auth_required": False, "is_active": True},
-        {"id": 2, "name": "demo-beta", "path_prefix": "/beta", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "backend_id": 2, "policy_id": 1, "auth_required": False, "is_active": True},
+        {"id": 1, "name": "demo-alpha", "path_prefix": "/alpha", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "backend_id": 1, "policy_id": 1, "auth_required": True, "is_active": True},
+        {"id": 2, "name": "demo-beta", "path_prefix": "/beta", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "backend_id": 2, "policy_id": 1, "auth_required": True, "is_active": True},
     ])
+    op.execute("SELECT setval(pg_get_serial_sequence('backends', 'id'), (SELECT MAX(id) FROM backends))")
+    op.execute("SELECT setval(pg_get_serial_sequence('rate_limit_policies', 'id'), (SELECT MAX(id) FROM rate_limit_policies))")
+    op.execute("SELECT setval(pg_get_serial_sequence('routes', 'id'), (SELECT MAX(id) FROM routes))")
 
 def downgrade():
     op.execute("DELETE FROM routes WHERE id IN (1, 2)")

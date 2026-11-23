@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from jose import jwt
 from redis.asyncio import Redis
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -15,6 +16,7 @@ from app.models import APIKey, Backend, RateLimitPolicy, Route, TrafficEvent
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://traffic:traffic-dev-only@localhost:5432/traffic")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "local-admin-token-change-me")
+JWT_SECRET = os.getenv("JWT_SECRET", "replace-this-with-a-long-random-secret")
 engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
 Session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -56,9 +58,22 @@ class RouteIn(BaseModel):
     strategy: str = "round_robin"
     is_active: bool = True
 
+class WhitelistIn(BaseModel):
+    client: str
+
+class OverrideIn(BaseModel):
+    limit: int = Field(ge=1)
+    ttl_seconds: int = Field(default=3600, ge=0, le=604800)
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "control-plane"}
+
+@app.post("/api/token", dependencies=[Depends(admin_guard)])
+async def create_admin_jwt():
+    from datetime import datetime, timedelta, timezone
+    token = jwt.encode({"sub": "local-admin", "iat": datetime.now(timezone.utc), "exp": datetime.now(timezone.utc) + timedelta(hours=1)}, JWT_SECRET, algorithm="HS256")
+    return {"access_token": token, "token_type": "bearer", "expires_in": 3600}
 
 @app.get("/api/routes", dependencies=[Depends(admin_guard)])
 async def list_routes():
@@ -149,3 +164,35 @@ async def recent_traffic(limit: int = 100):
     async with Session() as db:
         rows = (await db.scalars(select(TrafficEvent).order_by(desc(TrafficEvent.created_at)).limit(min(max(limit, 1), 500)))).all()
         return [{"request_id": r.request_id, "client": r.client, "route": r.route_name, "status": r.status_code, "latency_ms": r.latency_ms, "decision": r.decision, "created_at": r.created_at} for r in rows]
+
+@app.get("/api/whitelist", dependencies=[Depends(admin_guard)])
+async def get_whitelist():
+    return [{"client": client, "whitelisted": True} for client in sorted(await app.state.redis.smembers("policy:whitelist"))]
+
+@app.post("/api/whitelist", status_code=201, dependencies=[Depends(admin_guard)])
+async def add_whitelist(payload: WhitelistIn):
+    await app.state.redis.sadd("policy:whitelist", payload.client)
+    await app.state.redis.delete(f"policy:blocked:{payload.client}")
+    return {"client": payload.client, "whitelisted": True}
+
+@app.delete("/api/whitelist/{client}", dependencies=[Depends(admin_guard)])
+async def remove_whitelist(client: str):
+    await app.state.redis.srem("policy:whitelist", client)
+    return {"client": client, "whitelisted": False}
+
+@app.put("/api/policies/{policy_id}/override", dependencies=[Depends(admin_guard)])
+async def set_manual_override(policy_id: int, payload: OverrideIn):
+    async with Session() as db:
+        routes = (await db.scalars(select(Route).where(Route.policy_id == policy_id, Route.is_active.is_(True)))).all()
+    if not routes: raise HTTPException(404, "no active route uses this policy")
+    for route in routes:
+        key = f"policy:manual:{route.id}"
+        await app.state.redis.set(key, payload.limit, ex=payload.ttl_seconds or None)
+    return {"policy_id": policy_id, "limit": payload.limit, "ttl_seconds": payload.ttl_seconds}
+
+@app.delete("/api/policies/{policy_id}/override", dependencies=[Depends(admin_guard)])
+async def clear_manual_override(policy_id: int):
+    async with Session() as db:
+        routes = (await db.scalars(select(Route).where(Route.policy_id == policy_id))).all()
+    await app.state.redis.delete(*(f"policy:manual:{route.id}" for route in routes))
+    return {"policy_id": policy_id, "cleared": True}
