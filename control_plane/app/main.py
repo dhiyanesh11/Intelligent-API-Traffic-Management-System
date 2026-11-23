@@ -4,6 +4,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy import desc, select
@@ -25,6 +26,7 @@ async def lifespan(app):
     await engine.dispose()
 
 app = FastAPI(title="Traffic Control Plane", version="0.1.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3001", "http://127.0.0.1:3001", "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 
 async def admin_guard(x_admin_token: str = Header(default="")):
     if not hmac.compare_digest(x_admin_token, ADMIN_TOKEN):

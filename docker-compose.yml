@@ -72,6 +72,16 @@ services:
     ports: ["8010:8010"]
     depends_on:
       gateway: {condition: service_healthy}
+  ml_service:
+    build: ./ml_service
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://traffic:traffic-dev-only@postgres:5432/traffic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MODEL_PATH: /models/isolation_forest.joblib
+    volumes: ["ml_models:/models"]
+    ports: ["8020:8020"]
+    depends_on:
+      gateway: {condition: service_healthy}
   dashboard:
     build: ./dashboard
     ports: ["3001:80"]
@@ -93,3 +103,4 @@ volumes:
   postgres_data:
   redis_data:
   grafana_data:
+  ml_models:
