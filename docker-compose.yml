@@ -50,6 +50,19 @@ services:
       redis: {condition: service_healthy}
       backend_a: {condition: service_started}
       backend_b: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  event_worker:
+    build: ./gateway
+    command: ["python", "-m", "app.event_worker"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://traffic:traffic-dev-only@postgres:5432/traffic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      gateway: {condition: service_healthy}
   prometheus:
     image: prom/prometheus:v2.54.1
     volumes: ["./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]

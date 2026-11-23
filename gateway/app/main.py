@@ -13,6 +13,8 @@ from app.limiters import RateLimiter
 from app.routing import downstream_path, match_route, refresh_routes, route_refresh_loop
 from app.resilience import Resilience, cache_key, health_check_loop
 from app.security import authenticate
+from app.events import enqueue_event
+from app.metrics import BLOCKED, LATENCY, REQUESTS, metrics_response
 
 log = logging.getLogger(__name__)
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
@@ -46,6 +48,30 @@ app = FastAPI(title="Intelligent API Traffic Gateway", version="0.2.0", lifespan
 async def health():
     return {"status": "ok", "service": "gateway"}
 
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    return metrics_response()
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    if request.url.path in {"/health", "/metrics"}:
+        return await call_next(request)
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - started
+    status = response.status_code
+    REQUESTS.labels(request.method, str(status)).inc()
+    LATENCY.labels(request.method).observe(elapsed)
+    if status == 429:
+        BLOCKED.inc()
+    route = match_route(request.url.path, request.method)
+    client = request.client.host if request.client else "unknown"
+    enqueue_event(request.app.state.redis, request_id=request_id, client=client, route_name=route.name if route else "unmatched", status_code=status, latency_ms=round(elapsed * 1000, 3), decision="blocked" if status == 429 else "error" if status >= 500 else "allowed")
+    response.headers.setdefault("X-Request-ID", request_id)
+    return response
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def proxy(path: str, request: Request):
     if path in {"health", "metrics"}:
@@ -61,7 +87,7 @@ async def proxy(path: str, request: Request):
         principal = await authenticate(api_key, bearer, request.app.state.redis)
         if principal is None:
             raise HTTPException(401, "valid API key or bearer token required", headers={"WWW-Authenticate": "Bearer"})
-    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request_id = getattr(request.state, "request_id", request.headers.get("x-request-id") or str(uuid.uuid4()))
     client_ip = request.client.host if request.client else "unknown"
     subject = principal if route.scope == "api_key" and principal else client_ip if route.scope == "ip" else f"route:{route.id}"
     limit_key = f"rate:{route.id}:{route.scope}:{subject}"

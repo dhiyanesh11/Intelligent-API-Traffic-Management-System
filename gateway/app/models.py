@@ -62,3 +62,14 @@ class RouteBackend(Base):
     backend_id: Mapped[int] = mapped_column(ForeignKey("backends.id", ondelete="CASCADE"))
     weight: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class TrafficEvent(Base):
+    __tablename__ = "traffic_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    client: Mapped[str] = mapped_column(String(128), index=True)
+    route_name: Mapped[str] = mapped_column(String(100), index=True)
+    status_code: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[float] = mapped_column()
+    decision: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
