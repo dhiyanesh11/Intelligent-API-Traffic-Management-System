@@ -2,6 +2,7 @@ import asyncio
 import os
 import pytest
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from gateway.app.limiters import RateLimiter
 
 REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
@@ -9,6 +10,10 @@ REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
 @pytest.mark.asyncio
 async def test_sliding_window_is_atomic_under_concurrency():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    try: await redis.ping()
+    except RedisError:
+        await redis.aclose()
+        pytest.skip("Redis is not running; start docker compose to run atomicity checks")
     key = "test:limiter:concurrent"
     await redis.delete(key)
     limiter = RateLimiter(redis)
@@ -20,6 +25,10 @@ async def test_sliding_window_is_atomic_under_concurrency():
 @pytest.mark.asyncio
 async def test_token_bucket_blocks_until_refill():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    try: await redis.ping()
+    except RedisError:
+        await redis.aclose()
+        pytest.skip("Redis is not running; start docker compose to run limiter checks")
     key = "test:limiter:bucket"
     await redis.delete(key)
     limiter = RateLimiter(redis)

@@ -45,6 +45,14 @@ class Resilience:
     async def cache(self, key: str, value: dict, ttl: int = 10):
         await self.redis.set(key, json.dumps(value), ex=ttl)
 
+    async def acquire_connection(self, backend: str):
+        key = f"backend:connections:{backend}"
+        await self.redis.incr(key)
+        await self.redis.expire(key, 60)
+
+    async def release_connection(self, backend: str):
+        await self.redis.decr(f"backend:connections:{backend}")
+
     async def choose(self, route_id: int, strategy: str, backends: tuple[tuple[str, int], ...]) -> str:
         healthy = []
         for url, weight in backends:

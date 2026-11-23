@@ -132,8 +132,9 @@ async def proxy(path: str, request: Request):
             cached_headers.update(rate_headers)
             cached_headers["X-Cache"] = "HIT"
             return Response(content=bytes.fromhex(cached["body_hex"]), status_code=cached["status"], headers=cached_headers)
+    if route.strategy == "least_connections":
+        await resilience.acquire_connection(backend_url)
     try:
-        started = time.perf_counter()
         upstream = await request.app.state.http.request(request.method, destination, params=request.query_params, content=await request.body(), headers=headers)
         if request.method == "GET" and upstream.status_code >= 500:
             upstream = await request.app.state.http.request(request.method, destination, params=request.query_params, content=b"", headers=headers)
@@ -142,10 +143,14 @@ async def proxy(path: str, request: Request):
         else:
             await resilience.failure(backend_url)
     except httpx.TimeoutException:
+        if route.strategy == "least_connections": await resilience.release_connection(backend_url)
         raise HTTPException(503, "upstream timed out", headers={"X-Request-ID": request_id})
     except httpx.HTTPError:
+        if route.strategy == "least_connections": await resilience.release_connection(backend_url)
         log.exception("upstream request failed route=%s request_id=%s", route.name, request_id)
         raise HTTPException(502, "upstream unavailable", headers={"X-Request-ID": request_id})
+    if route.strategy == "least_connections":
+        await resilience.release_connection(backend_url)
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
     response_headers.update(rate_headers)
     response_headers["X-Cache"] = "MISS" if request.method == "GET" else "BYPASS"
