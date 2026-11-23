@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 from sqlalchemy import select
 from app.database import Session
-from app.models import Backend, Route
+from app.models import Backend, RateLimitPolicy, Route
 
 log = logging.getLogger(__name__)
 
@@ -16,14 +16,18 @@ class RouteConfig:
     base_url: str
     auth_required: bool
     policy_id: int | None
+    limit: int = 60
+    window_seconds: int = 60
+    algorithm: str = "token_bucket"
+    scope: str = "api_key"
 
 _routes: tuple[RouteConfig, ...] = ()
 
 async def refresh_routes():
     global _routes
     async with Session() as session:
-        result = await session.execute(select(Route, Backend).join(Backend, Route.backend_id == Backend.id).where(Route.is_active.is_(True), Backend.is_active.is_(True)))
-        _routes = tuple(RouteConfig(r.id, r.name, r.path_prefix.rstrip("/") or "/", tuple(r.methods), b.base_url.rstrip("/"), r.auth_required, r.policy_id) for r, b in result.all())
+        result = await session.execute(select(Route, Backend, RateLimitPolicy).join(Backend, Route.backend_id == Backend.id).outerjoin(RateLimitPolicy, Route.policy_id == RateLimitPolicy.id).where(Route.is_active.is_(True), Backend.is_active.is_(True)))
+        _routes = tuple(RouteConfig(r.id, r.name, r.path_prefix.rstrip("/") or "/", tuple(r.methods), b.base_url.rstrip("/"), r.auth_required, r.policy_id, p.limit if p else 60, p.window_seconds if p else 60, p.algorithm if p else "token_bucket", p.scope if p else "api_key") for r, b, p in result.all())
 
 async def route_refresh_loop():
     while True:

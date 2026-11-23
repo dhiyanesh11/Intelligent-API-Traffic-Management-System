@@ -6,5 +6,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "replace-this-with-a-long-random-secret"
     jwt_algorithm: str = "HS256"
+    redis_fail_open: bool = True
 
 settings = Settings()

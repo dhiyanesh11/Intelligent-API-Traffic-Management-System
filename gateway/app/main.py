@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from redis.asyncio import Redis
 
 from app.config import settings
+from app.limiters import RateLimiter
 from app.routing import downstream_path, match_route, refresh_routes, route_refresh_loop
 from app.security import authenticate
 
@@ -18,6 +19,7 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
 async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=3.0), follow_redirects=False)
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    app.state.limiter = RateLimiter(app.state.redis)
     await refresh_routes()
     refresh_task = asyncio.create_task(route_refresh_loop())
     yield
@@ -52,6 +54,21 @@ async def proxy(path: str, request: Request):
             raise HTTPException(401, "valid API key or bearer token required", headers={"WWW-Authenticate": "Bearer"})
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     client_ip = request.client.host if request.client else "unknown"
+    subject = principal if route.scope == "api_key" and principal else client_ip if route.scope == "ip" else f"route:{route.id}"
+    limit_key = f"rate:{route.id}:{route.scope}:{subject}"
+    rate_headers = {"X-RateLimit-Limit": str(route.limit), "X-Request-ID": request_id}
+    try:
+        allowed, remaining, retry_after = await request.app.state.limiter.check(key=limit_key, algorithm=route.algorithm, limit=route.limit, window_seconds=route.window_seconds, request_id=request_id)
+        rate_headers["X-RateLimit-Remaining"] = str(remaining)
+        if not allowed:
+            rate_headers["Retry-After"] = str(retry_after)
+            raise HTTPException(429, "rate limit exceeded", headers=rate_headers)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("rate limiter unavailable route=%s", route.name)
+        if not settings.redis_fail_open:
+            raise HTTPException(503, "rate limiter unavailable", headers=rate_headers)
     forwarded_for = request.headers.get("x-forwarded-for")
     headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() not in {"x-api-key", "authorization"}}
     headers["x-request-id"] = request_id
@@ -66,4 +83,7 @@ async def proxy(path: str, request: Request):
         raise HTTPException(502, "upstream unavailable", headers={"X-Request-ID": request_id})
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
     response_headers["X-Request-ID"] = request_id
+    response_headers["X-RateLimit-Limit"] = str(route.limit)
+    if "X-RateLimit-Remaining" in rate_headers:
+        response_headers["X-RateLimit-Remaining"] = rate_headers["X-RateLimit-Remaining"]
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
