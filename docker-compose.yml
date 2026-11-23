@@ -63,6 +63,19 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       gateway: {condition: service_healthy}
+  control_plane:
+    build: ./control_plane
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://traffic:traffic-dev-only@postgres:5432/traffic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin-token-change-me}
+    ports: ["8010:8010"]
+    depends_on:
+      gateway: {condition: service_healthy}
+  dashboard:
+    build: ./dashboard
+    ports: ["3001:80"]
+    depends_on: [control_plane]
   prometheus:
     image: prom/prometheus:v2.54.1
     volumes: ["./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
